@@ -41,13 +41,12 @@
   <script type="text/babel" data-type="module">
     const { useState, useEffect, useMemo } = React;
     
-    // 引入 Firebase 模組
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
     import { getAnalytics } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-analytics.js";
     import { 
       getAuth, 
-      signInWithRedirect, // 改用 Redirect
-      getRedirectResult,  // 獲取 Redirect 結果
+      signInWithRedirect, 
+      getRedirectResult,  
       GoogleAuthProvider, 
       signOut, 
       onAuthStateChanged 
@@ -76,7 +75,6 @@
     };
 
     const app = initializeApp(firebaseConfig);
-    const analytics = getAnalytics(app);
     const auth = getAuth(app);
     const db = getFirestore(app);
     
@@ -90,7 +88,8 @@
     function App() {
       const [user, setUser] = useState(null);
       const [loading, setLoading] = useState(true);
-      const [loginError, setLoginError] = useState(""); // 新增錯誤狀態
+      const [loginError, setLoginError] = useState("");
+      const [debugMsg, setDebugMsg] = useState("");
       
       const [transactions, setTransactions] = useState([]);
       const [budget, setBudget] = useState(500);
@@ -108,24 +107,39 @@
       const [newItemPrice, setNewItemPrice] = useState('');
       const [selectedIcon, setSelectedIcon] = useState('utensils');
 
-      // 1. 檢查登入狀態與重新導向結果
+      // 1. 核心登入邏輯
       useEffect(() => {
-        // 檢查 Redirect 回來後的錯誤
-        getRedirectResult(auth).catch((error) => {
-          console.error(error);
-          alert("登入錯誤: " + error.message); // 手機上彈出錯誤
-          setLoginError(error.message);
-        });
+        // 檢查 Redirect 結果
+        getRedirectResult(auth)
+          .then((result) => {
+            if (result) {
+              console.log("Redirect Success:", result);
+              setDebugMsg("Google 驗證成功，正在建立工作階段...");
+              setUser(result.user); // 強制設定用戶，防止 Listener 延遲
+            } else {
+              setDebugMsg("等待使用者操作...");
+            }
+          })
+          .catch((error) => {
+            console.error("Redirect Error:", error);
+            setLoginError(error.message);
+            if (error.code === 'auth/unauthorized-domain') {
+              setLoginError(`網域未授權！請將 ${window.location.hostname} 加入 Firebase Console。`);
+            }
+          });
 
-        // 監聽一般狀態變化
+        // 監聽 Auth 狀態
         const unsubscribe = onAuthStateChanged(auth, (u) => {
-          setUser(u);
+          if (u) {
+            setUser(u);
+            setDebugMsg("已登入：" + u.email);
+          }
           setLoading(false);
         });
         return () => unsubscribe();
       }, []);
 
-      // 2. 獲取數據
+      // 2. 數據監聽
       useEffect(() => {
         if (!user) return;
         
@@ -139,7 +153,6 @@
            setTransactions(txs);
         }, (error) => {
            if (error.code === 'failed-precondition') {
-              // Fallback for missing index
               onSnapshot(collection(db, 'users', user.uid, 'transactions'), (snap) => {
                  const txs = snap.docs.map(d => ({ id: d.id, ...d.data(), date: d.data().date?.toDate() || new Date() }));
                  txs.sort((a,b) => b.date - a.date);
@@ -162,7 +175,7 @@
       // --- Actions ---
       const handleLogin = () => {
         setLoginError("");
-        // 使用 Redirect 解決手機彈窗攔截問題
+        setDebugMsg("正在跳轉至 Google...");
         signInWithRedirect(auth, new GoogleAuthProvider());
       };
 
@@ -206,14 +219,15 @@
       const remaining = budget - totalSpent;
 
       if (loading) return (
-        <div className="h-screen flex items-center justify-center bg-[#F5F5F7]">
+        <div className="h-screen flex items-center justify-center bg-[#F5F5F7] flex-col gap-4">
           <div className="w-10 h-10 border-4 border-gray-200 border-t-black rounded-full animate-spin"></div>
+          <p className="text-gray-400 text-sm font-bold animate-pulse">正在恢復狀態...</p>
         </div>
       );
 
       // Login Screen
       if (!user) return (
-        <div className="h-screen flex flex-col items-center justify-center p-6 bg-[#F5F5F7]">
+        <div className="h-screen flex flex-col items-center justify-center p-6 bg-[#F5F5F7] overflow-y-auto">
           <div className="bg-white p-8 rounded-[2rem] shadow-xl w-full max-w-sm text-center">
             <div className="mb-6 flex justify-center text-blue-600">
                <Icon name="wallet" size={48} />
@@ -227,11 +241,28 @@
             </button>
             
             {loginError && (
-              <p className="mt-4 text-xs text-red-500 font-bold bg-red-50 p-2 rounded-lg">
-                錯誤: {loginError} <br/>
-                請檢查 Firebase Console 的 Authorized Domains
-              </p>
+              <div className="mt-4 p-4 bg-red-50 text-red-600 rounded-xl text-left text-xs">
+                <p className="font-bold mb-1 flex items-center gap-1"><Icon name="alert-circle" size={14}/> 登入失敗</p>
+                <p>{loginError}</p>
+              </div>
             )}
+
+            {/* Troubleshooting Section */}
+            <div className="mt-8 p-4 bg-gray-50 rounded-xl text-left text-xs text-gray-500 border border-gray-100">
+              <p className="font-bold mb-2 text-gray-700">為什麼登入沒反應？</p>
+              <ul className="list-disc pl-4 space-y-2">
+                <li>
+                  <span className="block text-gray-600">1. 請檢查網域授權：</span>
+                  請確認 <code className="bg-gray-200 px-1 py-0.5 rounded text-gray-800 select-all">{window.location.hostname}</code> <br/>
+                  已加入 Firebase Console 的 Authorized Domains。
+                </li>
+                <li>
+                  <span className="block text-gray-600">2. 瀏覽器設定：</span>
+                  請關閉「無痕模式」或「阻擋第三方 Cookie」。
+                </li>
+              </ul>
+              <p className="mt-2 pt-2 border-t border-gray-200 text-[10px] text-gray-400">狀態: {debugMsg}</p>
+            </div>
           </div>
         </div>
       );
@@ -421,6 +452,5 @@
   </script>
 </body>
 </html>
-
 
 
